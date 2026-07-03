@@ -4,43 +4,70 @@ import { app, db } from "./firebase";
 
 // ⚠️ Paste the "Web Push certificate" key pair value from:
 // Firebase console → ⚙️ Project settings → Cloud Messaging tab → Web configuration
-const VAPID_KEY = "PASTE_YOUR_VAPID_KEY_HERE";
+const VAPID_KEY = "BK3p2CF_wjKsU5_XrgqMuBQnf94rJzoCX5WaDeT3-72oOSxqezwlTfOqje-cJgYWJJCi13n9c53tEOjRPyVuvvw";
 
 let messaging = null;
+let initError = null;
 try {
   messaging = getMessaging(app);
 } catch (e) {
-  // Messaging isn't supported in this browser (e.g. very old Safari) — fail quietly.
+  initError = e;
   console.warn("Push messaging not supported here:", e);
 }
 
 // Call this once the person picks their name — asks for permission, registers
 // this specific device/browser with Firebase, and saves its token so the
 // server knows where to deliver pushes.
+// Returns { token } on success, or { error } with a human-readable reason on failure —
+// so the UI can actually show what went wrong instead of failing silently.
 export async function enableNotifications(personName) {
-  if (!messaging) return null;
+  if (!messaging) {
+    return { error: `Messaging not supported on this browser: ${initError?.message || "unknown reason"}` };
+  }
   try {
+    if (!("Notification" in window)) {
+      return { error: "This browser doesn't support notifications at all." };
+    }
     const permission = await Notification.requestPermission();
-    if (permission !== "granted") return null;
+    if (permission !== "granted") {
+      return { error: `Permission was "${permission}" — you likely tapped Block, or it's blocked in browser settings.` };
+    }
 
-    const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
-    const token = await getToken(messaging, {
-      vapidKey: VAPID_KEY,
-      serviceWorkerRegistration: registration
-    });
-    if (!token) return null;
+    let registration;
+    try {
+      registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+      await navigator.serviceWorker.ready;
+    } catch (e) {
+      return { error: `Service worker failed to register: ${e.message}` };
+    }
 
-    // Save this device's token, keyed by the token itself (naturally de-duplicates
-    // if the same device registers twice).
-    await set(ref(db, `notifications/tokens/${token}`), {
-      name: personName,
-      ts: Date.now()
-    });
+    let token;
+    try {
+      token = await getToken(messaging, {
+        vapidKey: VAPID_KEY,
+        serviceWorkerRegistration: registration
+      });
+    } catch (e) {
+      return { error: `getToken failed: ${e.code || e.message}` };
+    }
+    if (!token) {
+      return { error: "getToken returned empty — permission or VAPID key issue." };
+    }
+
+    try {
+      await set(ref(db, `notifications/tokens/${token}`), {
+        name: personName,
+        ts: Date.now()
+      });
+    } catch (e) {
+      return { error: `Saved token locally but failed to write to database: ${e.message}` };
+    }
+
     localStorage.setItem("devikas_fcm_token", token);
-    return token;
+    return { token };
   } catch (e) {
     console.error("Failed to enable notifications:", e);
-    return null;
+    return { error: e.message || String(e) };
   }
 }
 
