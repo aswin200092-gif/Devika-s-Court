@@ -1,0 +1,12 @@
+{
+  "name": "Devika's Court",
+  "short_name": "Devika's Court",
+  "description": "The weekly fine jar — court reconvenes Friday 3PM",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0e1e16",
+  "theme_color": "#0e1e16",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
