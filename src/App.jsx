@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { db } from "./firebase";
-import { ref, onValue, set } from "firebase/database";
+import { enableNotifications, onForegroundMessage } from "./notifications";
+import { ref, onValue, set, update, runTransaction, push } from "firebase/database";
 
 // ── palette & constants ───────────────────────────────────────────────────────
 const PALETTE = [
@@ -593,7 +594,7 @@ function CourtSession({ people, onClose, onBack, colorOf }) {
 }
 
 // ── settings ──────────────────────────────────────────────────────────────────
-function Settings({ people, onSave, onClose }) {
+function Settings({ people, onSave, onClose, onOpenHistory }) {
   const [list, setList]         = useState(people.map(p => ({ ...p })));
   const [newName, setNewName]   = useState("");
   const [newGender, setNewGender] = useState("m");
@@ -695,11 +696,429 @@ function Settings({ people, onSave, onClose }) {
           </div>
         </div>
 
-        <button onClick={onClose} style={{
+        <button onClick={onOpenHistory} style={{
           marginTop:13, width:"100%", padding:"9px", borderRadius:9,
+          border:"1px solid rgba(232,192,116,0.3)", background:"rgba(232,192,116,0.08)",
+          color:"#e8c074", cursor:"pointer", fontSize:"0.82rem", fontWeight:500
+        }}>📜 View History & Backups</button>
+
+        <button onClick={onClose} style={{
+          marginTop:9, width:"100%", padding:"9px", borderRadius:9,
           border:"1px solid rgba(255,255,255,0.15)", background:"transparent",
           color:"rgba(255,255,255,0.5)", cursor:"pointer", fontSize:"0.82rem"
         }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ── chat ─────────────────────────────────────────────────────────────────────
+function ChatPanel({ people, onClose }) {
+  const [myName, setMyName]   = useState(() => localStorage.getItem("devikas_chat_name") || "");
+  const [messages, setMessages] = useState([]);
+  const [text, setText]       = useState("");
+  const [notifStatus, setNotifStatus] = useState(
+    localStorage.getItem("devikas_fcm_token") ? "on" : "off"
+  );
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    const msgsRef = ref(db, "chat/messages");
+    const unsub = onValue(msgsRef, snapshot => {
+      const data = snapshot.val() || {};
+      const arr = Object.entries(data)
+        .map(([key, v]) => ({ key, ...v }))
+        .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      setMessages(arr);
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  function pickName(name) {
+    setMyName(name);
+    localStorage.setItem("devikas_chat_name", name);
+  }
+
+  async function handleEnableNotifs() {
+    setNotifStatus("asking");
+    const token = await enableNotifications(myName);
+    setNotifStatus(token ? "on" : "off");
+  }
+
+  async function sendMessage() {
+    const trimmed = text.trim();
+    if (!trimmed || !myName) return;
+    setText("");
+    await push(ref(db, "chat/messages"), { name: myName, text: trimmed, ts: Date.now() });
+    // fire-and-forget — ask the server to push a notification to everyone else
+    fetch("/api/send-notification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: myName,
+        body: trimmed,
+        senderToken: localStorage.getItem("devikas_fcm_token") || ""
+      })
+    }).catch(() => {}); // if this fails, the chat itself still works fine
+  }
+
+  // ── identity picker — first time only ──
+  if (!myName) {
+    return (
+      <div style={{
+        position:"fixed", inset:0, background:"linear-gradient(135deg, #0e1e16 0%, #1a3028 60%, #0e1e16 100%)",
+        display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+        zIndex:300, color:"#fff", fontFamily:"'Inter', sans-serif", padding:24
+      }}>
+        <div style={{ fontSize:"2rem", marginBottom:14 }}>💬</div>
+        <div style={{ fontFamily:"'Fraunces', serif", fontWeight:900, fontSize:"1.2rem", marginBottom:22 }}>
+          Which one are you?
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:10, width:"100%", maxWidth:280, marginBottom:24 }}>
+          {people.map(p => (
+            <button key={p.id} onClick={() => pickName(p.name)} style={{
+              padding:"13px", borderRadius:12, border:"1px solid rgba(255,255,255,0.2)",
+              background:"rgba(255,255,255,0.08)", color:"#fff", fontSize:"0.95rem",
+              fontWeight:600, cursor:"pointer"
+            }}>{p.name}</button>
+          ))}
+        </div>
+        <button onClick={onClose} style={{
+          padding:"10px 24px", borderRadius:10, border:"1px solid rgba(255,255,255,0.2)",
+          background:"transparent", color:"rgba(255,255,255,0.6)", cursor:"pointer", fontSize:"0.85rem"
+        }}>← Back</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      position:"fixed", inset:0, background:"linear-gradient(135deg, #0e1e16 0%, #1a3028 60%, #0e1e16 100%)",
+      display:"flex", flexDirection:"column", zIndex:300, color:"#fff", fontFamily:"'Inter', sans-serif"
+    }}>
+      {/* header */}
+      <div style={{
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+        padding:"18px 20px 12px", borderBottom:"1px solid rgba(255,255,255,0.08)"
+      }}>
+        <button onClick={onClose} style={{
+          background:"none", border:"none", color:"#fff", fontSize:"1.3rem", cursor:"pointer", padding:0
+        }}>←</button>
+        <div style={{ fontFamily:"'Fraunces', serif", fontWeight:900, fontSize:"1.05rem" }}>💬 Chat</div>
+        <div style={{ width:22 }} />
+      </div>
+
+      {notifStatus !== "on" && (
+        <button onClick={handleEnableNotifs} disabled={notifStatus === "asking"} style={{
+          margin:"10px 20px 0", padding:"9px 14px", borderRadius:10, border:"1px solid rgba(232,192,116,0.4)",
+          background:"rgba(232,192,116,0.1)", color:"#e8c074", fontSize:"0.78rem", cursor:"pointer", fontWeight:500
+        }}>
+          {notifStatus === "asking" ? "Requesting…" : "🔔 Turn on notifications for new messages"}
+        </button>
+      )}
+
+      {/* messages */}
+      <div style={{ flex:1, overflowY:"auto", padding:"16px 20px" }}>
+        {messages.length === 0 && (
+          <div style={{ textAlign:"center", color:"rgba(255,255,255,0.35)", fontSize:"0.85rem", marginTop:40 }}>
+            No messages yet — say something.
+          </div>
+        )}
+        {messages.map(m => {
+          const mine = m.name === myName;
+          return (
+            <div key={m.key} style={{
+              display:"flex", flexDirection:"column",
+              alignItems: mine ? "flex-end" : "flex-start", marginBottom:12
+            }}>
+              {!mine && (
+                <div style={{ fontSize:"0.68rem", color:"rgba(255,255,255,0.4)", marginBottom:3, marginLeft:4 }}>
+                  {m.name}
+                </div>
+              )}
+              <div style={{
+                maxWidth:"75%", padding:"9px 13px", borderRadius: mine ? "14px 14px 3px 14px" : "14px 14px 14px 3px",
+                background: mine ? "#e8c074" : "rgba(255,255,255,0.08)",
+                color: mine ? "#1a1a1a" : "#fff", fontSize:"0.9rem", lineHeight:1.4,
+                wordBreak:"break-word"
+              }}>{m.text}</div>
+            </div>
+          );
+        })}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* input */}
+      <div style={{
+        display:"flex", gap:8, padding:"12px 16px", paddingBottom:"max(12px, env(safe-area-inset-bottom))",
+        borderTop:"1px solid rgba(255,255,255,0.08)"
+      }}>
+        <input
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") sendMessage(); }}
+          placeholder="Message the group…"
+          style={{
+            flex:1, padding:"11px 15px", borderRadius:20,
+            background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.15)",
+            color:"#fff", fontSize:"0.9rem", outline:"none"
+          }}
+        />
+        <button onClick={sendMessage} style={{
+          width:44, height:44, borderRadius:"50%", border:"none",
+          background:"#c0533e", color:"#fff", fontSize:"1.1rem", cursor:"pointer",
+          flexShrink:0
+        }}>➤</button>
+      </div>
+    </div>
+  );
+}
+
+// ── history & backups ────────────────────────────────────────────────────────
+function timeAgo(ts) {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+const ACTION_META = {
+  charge: { icon: "💰", verb: (e) => `charged ${e.personName} +₹2` },
+  undo:   { icon: "↩️", verb: (e) => `undid ${e.personName}'s ₹2 fine` },
+  rename: { icon: "✏️", verb: (e) => `renamed "${e.before}" → "${e.after}"` },
+  reset:  { icon: "🔨", verb: (e) => `closed court (cleared ₹${e.totalCleared})` },
+  roster_edit: { icon: "⚙️", verb: () => `updated the member list` },
+  revert: { icon: "🛡️", verb: (e) => `reverted an earlier action` },
+  restore: { icon: "🛡️", verb: () => `restored a backup snapshot` },
+};
+
+function HistoryPanel({ onClose }) {
+  const [tab, setTab]             = useState("activity"); // activity | backups | collections
+  const [entries, setEntries]     = useState([]);
+  const [collections, setCollections] = useState([]);
+  const [backups, setBackups]     = useState([]);
+  const [busyKey, setBusyKey]     = useState(null);
+
+  useEffect(() => {
+    const unsub1 = onValue(ref(db, "court/auditLog"), snap => {
+      const data = snap.val() || {};
+      const all = Object.entries(data)
+        .map(([key, v]) => ({ key, ...v }))
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      setEntries(all.slice(0, 50));
+      // "reset" entries are the moment court closed for the week — each one
+      // already records the total collected. Kept unsliced (not just the
+      // last 50) so a month's worth of weeks is never cut off.
+      setCollections(all.filter(e => e.action === "reset"));
+    });
+    const unsub2 = onValue(ref(db, "backups"), snap => {
+      const data = snap.val() || {};
+      const arr = Object.entries(data)
+        .map(([key, v]) => ({ key, ...v }))
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+        .slice(0, 15);
+      setBackups(arr);
+    });
+    return () => { unsub1(); unsub2(); };
+  }, []);
+
+  function whoAmI() {
+    return localStorage.getItem("devikas_chat_name") || "Someone";
+  }
+  function logAction(action, details) {
+    push(ref(db, "court/auditLog"), { action, by: whoAmI(), ts: Date.now(), ...details })
+      .catch(e => console.error(e));
+  }
+
+  async function revertEntry(entry) {
+    setBusyKey(entry.key);
+    try {
+      if (entry.action === "charge" || entry.action === "undo") {
+        await runTransaction(
+          ref(db, `court/people/${entry.personId}/amt`),
+          current => Math.max((current || 0) - entry.delta, 0)
+        );
+        logAction("revert", { originalAction: entry.action, personId: entry.personId, personName: entry.personName });
+      } else if (entry.action === "rename") {
+        await update(ref(db, `court/people/${entry.personId}`), { name: entry.before });
+        logAction("revert", { originalAction: "rename", personId: entry.personId });
+      }
+    } catch (e) { console.error(e); }
+    setBusyKey(null);
+  }
+
+  async function restoreBackup(backup) {
+    setBusyKey(backup.key);
+    try {
+      const updates = {};
+      (backup.people || []).forEach(p => { updates[`court/people/${p.id}/amt`] = p.amt; });
+      await update(ref(db), updates);
+      logAction("restore", { backupTs: backup.ts });
+    } catch (e) { console.error(e); }
+    setBusyKey(null);
+  }
+
+  const revertible = new Set(["charge", "undo", "rename"]);
+
+  return (
+    <div style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,0.6)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:400
+    }}>
+      <div style={{
+        background:"linear-gradient(145deg, #2a4a38, #1e3328)",
+        borderRadius:18, padding:"22px 20px",
+        width:360, maxHeight:"85vh", display:"flex", flexDirection:"column",
+        color:"#fff", fontFamily:"'Inter', sans-serif",
+        boxShadow:"0 20px 60px rgba(0,0,0,0.5)"
+      }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+          <div style={{ fontFamily:"'Fraunces',serif", fontWeight:900, fontSize:"1.05rem" }}>📜 History</div>
+          <button onClick={onClose} style={{
+            background:"none", border:"none", color:"rgba(255,255,255,0.6)",
+            fontSize:"1.1rem", cursor:"pointer", padding:0
+          }}>✕</button>
+        </div>
+
+        <div style={{ display:"flex", gap:6, marginBottom:14 }}>
+          <button onClick={() => setTab("activity")} style={{
+            flex:1, padding:"7px", borderRadius:8, border:"none", cursor:"pointer",
+            background: tab === "activity" ? "#7a8c3f" : "rgba(255,255,255,0.08)",
+            color:"#fff", fontSize:"0.78rem", fontWeight:600
+          }}>Activity</button>
+          <button onClick={() => setTab("backups")} style={{
+            flex:1, padding:"7px", borderRadius:8, border:"none", cursor:"pointer",
+            background: tab === "backups" ? "#7a8c3f" : "rgba(255,255,255,0.08)",
+            color:"#fff", fontSize:"0.78rem", fontWeight:600
+          }}>Backups</button>
+          <button onClick={() => setTab("collections")} style={{
+            flex:1, padding:"7px", borderRadius:8, border:"none", cursor:"pointer",
+            background: tab === "collections" ? "#7a8c3f" : "rgba(255,255,255,0.08)",
+            color:"#fff", fontSize:"0.78rem", fontWeight:600
+          }}>Collections</button>
+        </div>
+
+        <div style={{ overflowY:"auto", flex:1 }}>
+          {tab === "activity" && (
+            entries.length === 0
+              ? <div style={{ textAlign:"center", color:"rgba(255,255,255,0.35)", fontSize:"0.82rem", marginTop:20 }}>No activity yet.</div>
+              : entries.map(e => {
+                  const meta = ACTION_META[e.action] || { icon:"•", verb:() => e.action };
+                  return (
+                    <div key={e.key} style={{
+                      display:"flex", alignItems:"center", justifyContent:"space-between",
+                      padding:"9px 10px", marginBottom:6, borderRadius:10,
+                      background:"rgba(255,255,255,0.05)"
+                    }}>
+                      <div style={{ display:"flex", gap:9, alignItems:"flex-start", minWidth:0 }}>
+                        <span style={{ fontSize:"0.95rem" }}>{meta.icon}</span>
+                        <div style={{ minWidth:0 }}>
+                          <div style={{ fontSize:"0.82rem", lineHeight:1.4 }}>
+                            <strong>{e.by}</strong> {meta.verb(e)}
+                          </div>
+                          <div style={{ fontSize:"0.66rem", color:"rgba(255,255,255,0.4)" }}>{timeAgo(e.ts)}</div>
+                        </div>
+                      </div>
+                      {revertible.has(e.action) && (
+                        <button onClick={() => revertEntry(e)} disabled={busyKey === e.key} style={{
+                          flexShrink:0, marginLeft:8, padding:"5px 10px", borderRadius:7,
+                          border:"1px solid rgba(232,192,116,0.35)", background:"rgba(232,192,116,0.1)",
+                          color:"#e8c074", fontSize:"0.68rem", cursor:"pointer", fontWeight:600
+                        }}>{busyKey === e.key ? "…" : "Revert"}</button>
+                      )}
+                    </div>
+                  );
+                })
+          )}
+
+          {tab === "backups" && (
+            backups.length === 0
+              ? <div style={{ textAlign:"center", color:"rgba(255,255,255,0.35)", fontSize:"0.82rem", marginTop:20 }}>
+                  No backups yet — one is saved automatically every time court closes.
+                </div>
+              : backups.map(b => (
+                  <div key={b.key} style={{
+                    display:"flex", alignItems:"center", justifyContent:"space-between",
+                    padding:"11px 12px", marginBottom:7, borderRadius:10,
+                    background:"rgba(255,255,255,0.05)"
+                  }}>
+                    <div>
+                      <div style={{ fontSize:"0.82rem" }}>
+                        Snapshot from <strong>{timeAgo(b.ts)}</strong>
+                      </div>
+                      <div style={{ fontSize:"0.68rem", color:"rgba(255,255,255,0.4)" }}>
+                        {(b.people || []).length} members · closed by {b.by}
+                      </div>
+                    </div>
+                    <button onClick={() => restoreBackup(b)} disabled={busyKey === b.key} style={{
+                      flexShrink:0, marginLeft:8, padding:"6px 12px", borderRadius:7,
+                      border:"1px solid rgba(232,192,116,0.35)", background:"rgba(232,192,116,0.1)",
+                      color:"#e8c074", fontSize:"0.7rem", cursor:"pointer", fontWeight:600
+                    }}>{busyKey === b.key ? "…" : "Restore"}</button>
+                  </div>
+                ))
+          )}
+
+          {tab === "collections" && (() => {
+            if (collections.length === 0) {
+              return (
+                <div style={{ textAlign:"center", color:"rgba(255,255,255,0.35)", fontSize:"0.82rem", marginTop:20 }}>
+                  No weeks closed yet — a total is recorded here every time court closes.
+                </div>
+              );
+            }
+            // group weeks by calendar month, newest month first
+            const groups = {};
+            const order = [];
+            collections.forEach(c => {
+              const label = new Date(c.ts).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+              if (!groups[label]) { groups[label] = []; order.push(label); }
+              groups[label].push(c);
+            });
+            return order.map(label => {
+              const weeks = groups[label];
+              const monthTotal = weeks.reduce((s, w) => s + (w.totalCleared || 0), 0);
+              return (
+                <div key={label} style={{ marginBottom:18 }}>
+                  <div style={{
+                    display:"flex", justifyContent:"space-between", alignItems:"baseline",
+                    marginBottom:8, paddingBottom:6, borderBottom:"1px solid rgba(255,255,255,0.1)"
+                  }}>
+                    <span style={{ fontFamily:"'Fraunces',serif", fontWeight:700, fontSize:"0.88rem" }}>{label}</span>
+                    <span style={{ fontFamily:"'Fraunces',serif", fontWeight:900, fontSize:"1rem", color:"#e8c074" }}>
+                      ₹{monthTotal} total
+                    </span>
+                  </div>
+                  {weeks.map(w => (
+                    <div key={w.key} style={{
+                      display:"flex", justifyContent:"space-between", alignItems:"center",
+                      padding:"8px 10px", marginBottom:5, borderRadius:9, background:"rgba(255,255,255,0.05)"
+                    }}>
+                      <div>
+                        <div style={{ fontSize:"0.8rem" }}>
+                          {new Date(w.ts).toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" })}
+                        </div>
+                        <div style={{ fontSize:"0.65rem", color:"rgba(255,255,255,0.4)" }}>closed by {w.by}</div>
+                      </div>
+                      <div style={{ fontFamily:"'Fraunces',serif", fontWeight:900, fontSize:"0.95rem", color:"#e8c074" }}>
+                        ₹{w.totalCleared || 0}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            });
+          })()}
+        </div>
       </div>
     </div>
   );
@@ -712,10 +1131,38 @@ export default function App() {
   const [nextId,       setNextId]       = useState(1);
   const [showCourt,    setShowCourt]    = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showChat,     setShowChat]     = useState(false);
+  const [showHistory,  setShowHistory]  = useState(false);
+  const [unreadCount,  setUnreadCount]  = useState(0);
+  const [toast,        setToast]        = useState(null);
   const [poppingId,    setPoppingId]    = useState(null);
   const [offline,      setOffline]      = useState(false);
 
-  const nextIdRef = useRef(1); // always-current value, since setState is async
+  const nextIdRef = useRef(1);   // always-current value, since setState is async
+  const migratedRef = useRef(false); // ensures the one-time format upgrade below only runs once
+
+  // People are stored in Firebase as an OBJECT keyed by id — court/people/{id} —
+  // instead of one big array. This means charging one person only ever touches
+  // that person's own little slot in the database, so two people tapping +
+  // on two DIFFERENT friends at the same instant can never overwrite each other.
+  function peopleObjToArray(obj) {
+    if (!obj) return [];
+    return Object.values(obj).sort((a, b) => a.id - b.id);
+  }
+
+  // Older versions of the app saved people as a plain list, which Firebase
+  // stores internally keyed by *position* (0, 1, 2…) rather than by each
+  // person's own id. The very first time this new code loads, we quietly
+  // re-save the data keyed by id instead — so nobody's existing fines are
+  // lost or duplicated when the app updates.
+  function migrateToIdKeyedFormat(peopleArr, nn) {
+    if (migratedRef.current || peopleArr.length === 0) return;
+    migratedRef.current = true;
+    const peopleObj = {};
+    peopleArr.forEach(p => { peopleObj[p.id] = p; });
+    set(ref(db, "court/people"), peopleObj).catch(e => console.error(e));
+    set(ref(db, "court/nextId"), nn).catch(e => console.error(e));
+  }
 
   // ── storage — shared Firebase Realtime Database ──────────────────────────────
   // Every device reads/writes the same "court" node, so A, B, C, D all see
@@ -727,9 +1174,12 @@ export default function App() {
       snapshot => {
         const data = snapshot.val();
         if (data) {
-          setPeople(data.people || []);
-          setNextId(data.nextId || 1);
-          nextIdRef.current = data.nextId || 1;
+          const arr = peopleObjToArray(data.people);
+          const nn  = data.nextId || 1;
+          setPeople(arr);
+          setNextId(nn);
+          nextIdRef.current = nn;
+          migrateToIdKeyedFormat(arr, nn);
         }
         setLoaded(true);
         setOffline(false);
@@ -743,53 +1193,118 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  async function persist(np, nn) {
-    const finalNextId = nn ?? nextIdRef.current;
-    nextIdRef.current = finalNextId;
-    try {
-      await set(ref(db, "court"), { people: np, nextId: finalNextId });
-    } catch (e) { console.error(e); }
-  }
+  // ── unread chat badge ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const msgsRef = ref(db, "chat/messages");
+    const unsub = onValue(msgsRef, snapshot => {
+      const data = snapshot.val() || {};
+      const msgs = Object.values(data);
+      if (showChat) {
+        const latestTs = msgs.reduce((m, x) => Math.max(m, x.ts || 0), 0);
+        localStorage.setItem("devikas_chat_lastseen", String(latestTs));
+        setUnreadCount(0);
+      } else {
+        const lastSeen = Number(localStorage.getItem("devikas_chat_lastseen") || 0);
+        setUnreadCount(msgs.filter(m => (m.ts || 0) > lastSeen).length);
+      }
+    });
+    return () => unsub();
+  }, [showChat]);
+
+  // ── foreground push toast — shown if a message arrives while the app is
+  // already open (browsers don't auto-show OS notifications in that case) ──
+  useEffect(() => {
+    const unsub = onForegroundMessage(payload => {
+      if (showChat) return; // already looking at the chat, no need for a toast
+      setToast({
+        title: payload.notification?.title || "New message",
+        body: payload.notification?.body || ""
+      });
+      setTimeout(() => setToast(null), 3500);
+    });
+    return unsub;
+  }, [showChat]);
 
   // ── actions ────────────────────────────────────────────────────────────────
+  // Every change gets a small breadcrumb in court/auditLog — who did what,
+  // and what the value was before/after — so anything can be reviewed or
+  // reversed later, even if it wasn't done by the "right" person.
+  function whoAmI() {
+    return localStorage.getItem("devikas_chat_name") || "Someone";
+  }
+  function logAction(action, details) {
+    push(ref(db, "court/auditLog"), { action, by: whoAmI(), ts: Date.now(), ...details })
+      .catch(e => console.error(e));
+  }
+
   function charge(personId) {
-    const np = people.map(p => p.id === personId ? { ...p, amt: p.amt + 2 } : p);
-    setPeople(np);
-    persist(np);
-    // pop animation
+    const person = people.find(p => p.id === personId);
+    const before = person ? person.amt : 0;
+    // update the screen immediately so it feels instant…
+    setPeople(prev => prev.map(p => p.id === personId ? { ...p, amt: p.amt + 2 } : p));
     setPoppingId(personId);
     setTimeout(() => setPoppingId(null), 350);
+    // …then ask Firebase to add ₹2 to whatever the CURRENT server value is
+    // (a transaction), not whatever value we happened to have on our screen.
+    // This is what makes simultaneous taps from different phones both count.
+    runTransaction(ref(db, `court/people/${personId}/amt`), current => (current || 0) + 2)
+      .catch(e => console.error(e));
+    logAction("charge", { personId, personName: person?.name || "?", before, after: before + 2, delta: 2 });
   }
 
   function undo(personId) {
     const p = people.find(p => p.id === personId);
     if (!p || p.amt < 2) return;
-    const np = people.map(p => p.id === personId ? { ...p, amt: p.amt - 2 } : p);
-    setPeople(np);
-    persist(np);
+    const before = p.amt;
+    setPeople(prev => prev.map(p => p.id === personId ? { ...p, amt: p.amt - 2 } : p));
+    runTransaction(ref(db, `court/people/${personId}/amt`), current => Math.max((current || 0) - 2, 0))
+      .catch(e => console.error(e));
+    logAction("undo", { personId, personName: p.name, before, after: before - 2, delta: -2 });
   }
 
   function editName(personId, name) {
-    const np = people.map(p => p.id === personId ? { ...p, name } : p);
-    setPeople(np);
-    persist(np);
+    const p = people.find(p => p.id === personId);
+    const before = p?.name || "";
+    setPeople(prev => prev.map(p => p.id === personId ? { ...p, name } : p));
+    update(ref(db, `court/people/${personId}`), { name }).catch(e => console.error(e));
+    logAction("rename", { personId, before, after: name });
   }
 
-  function closeCourt() {
-    const np = people.map(p => ({ ...p, amt: 0 }));
-    setPeople(np);
-    persist(np);
+  async function closeCourt() {
+    // save a full snapshot BEFORE wiping anything — so a reset (accidental
+    // or not) can always be undone from the History panel.
+    try {
+      const backupRef = push(ref(db, "backups"));
+      await set(backupRef, { people, ts: Date.now(), by: whoAmI() });
+    } catch (e) { console.error(e); }
+
+    // resets everyone's fine to ₹0 — touches every person, but only the
+    // "amt" field of each, in a single multi-path write.
+    const totalCleared = people.reduce((s, p) => s + p.amt, 0);
+    const updates = {};
+    people.forEach(p => { updates[`court/people/${p.id}/amt`] = 0; });
+    setPeople(prev => prev.map(p => ({ ...p, amt: 0 })));
+    update(ref(db), updates).catch(e => console.error(e));
+    logAction("reset", { totalCleared });
     setShowCourt(false);
   }
 
   function saveSettings(newList) {
-    const np = newList.map(p => {
+    // roster edits (adding/removing/renaming members) are infrequent, so a
+    // full replace of the people list is fine here — it's charge/undo taps
+    // (which happen constantly) that needed the careful per-field writes above.
+    const peopleObj = {};
+    newList.forEach(p => {
       const existing = people.find(e => e.id === p.id);
-      return existing ? { ...p, amt: existing.amt } : p;
+      peopleObj[p.id] = existing ? { ...p, amt: existing.amt } : { ...p, amt: 0 };
     });
-    const nn = Math.max(...np.map(p => p.id), 0) + 1;
-    setPeople(np); setNextId(nn);
-    persist(np, nn);
+    const nn = Math.max(...newList.map(p => p.id), 0) + 1;
+    setPeople(peopleObjToArray(peopleObj));
+    setNextId(nn);
+    nextIdRef.current = nn;
+    set(ref(db, "court/people"), peopleObj).catch(e => console.error(e));
+    set(ref(db, "court/nextId"), nn).catch(e => console.error(e));
+    logAction("roster_edit", { memberCount: newList.length });
     setShowSettings(false);
   }
 
@@ -871,6 +1386,24 @@ export default function App() {
           }}>
             ⚖️ {isFriday ? "Court is Open!" : "Court Session"}
           </button>
+
+          <button onClick={() => setShowChat(true)} style={{
+            padding:"8px 18px", borderRadius:22, cursor:"pointer",
+            border:"1px solid rgba(255,255,255,0.32)",
+            background:"rgba(255,255,255,0.15)", color:"#fff",
+            fontSize:"0.8rem", fontWeight:500, backdropFilter:"blur(4px)",
+            position:"relative"
+          }}>
+            💬 Chat
+            {unreadCount > 0 && (
+              <span style={{
+                position:"absolute", top:-6, right:-6, background:"#c0533e",
+                color:"#fff", fontSize:"0.62rem", fontWeight:700,
+                minWidth:18, height:18, borderRadius:9, display:"flex",
+                alignItems:"center", justifyContent:"center", padding:"0 4px"
+              }}>{unreadCount}</span>
+            )}
+          </button>
         </div>
 
         {/* ── jar shelf ── */}
@@ -922,7 +1455,31 @@ export default function App() {
         <CourtSession people={people} colorOf={colorOf} onClose={closeCourt} onBack={() => setShowCourt(false)} />
       )}
       {showSettings && (
-        <Settings people={people} onSave={saveSettings} onClose={() => setShowSettings(false)} />
+        <Settings
+          people={people}
+          onSave={saveSettings}
+          onClose={() => setShowSettings(false)}
+          onOpenHistory={() => { setShowSettings(false); setShowHistory(true); }}
+        />
+      )}
+      {showHistory && (
+        <HistoryPanel onClose={() => setShowHistory(false)} />
+      )}
+      {showChat && (
+        <ChatPanel people={people} onClose={() => setShowChat(false)} />
+      )}
+      {toast && (
+        <div onClick={() => { setShowChat(true); setToast(null); }} style={{
+          position:"fixed", top:16, left:16, right:16, zIndex:500,
+          background:"#1a3028", border:"1px solid rgba(232,192,116,0.4)",
+          borderRadius:14, padding:"12px 16px", color:"#fff", cursor:"pointer",
+          boxShadow:"0 8px 24px rgba(0,0,0,0.4)", fontFamily:"'Inter', sans-serif"
+        }}>
+          <div style={{ fontWeight:700, fontSize:"0.85rem", color:"#e8c074", marginBottom:2 }}>
+            💬 {toast.title}
+          </div>
+          <div style={{ fontSize:"0.82rem", color:"rgba(255,255,255,0.8)" }}>{toast.body}</div>
+        </div>
       )}
     </>
   );
