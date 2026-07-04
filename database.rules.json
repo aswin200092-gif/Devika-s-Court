@@ -1,0 +1,72 @@
+{
+  "rules": {
+
+    "court": {
+      ".read": true,
+      ".write": true,
+
+      "people": {
+        "$personId": {
+          ".validate": "newData.hasChildren(['id','name','gender','amt'])",
+          "id":     { ".validate": "newData.isNumber()" },
+          "name":   { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 40" },
+          "gender": { ".validate": "newData.val() == 'm' || newData.val() == 'f'" },
+          "amt":    { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000 && newData.val() % 2 == 0" },
+          "photo":  { ".validate": "newData.isString() && newData.val().length <= 250000" },
+          "owed":   { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000" },
+          "$other": { ".validate": false }
+        }
+      },
+
+      "nextId": { ".validate": "newData.isNumber() && newData.val() >= 0" },
+
+      "settings": {
+        "upiId":         { ".validate": "newData.isString() && newData.val().length <= 100" },
+        "collectorName": { ".validate": "newData.isString() && newData.val().length <= 60" }
+      },
+
+      "auditLog": {
+        "$entryId": {
+          ".validate": "(!data.exists() && newData.hasChildren(['action','by','ts'])) || !newData.exists()",
+          "action": { ".validate": "newData.isString() && newData.val().length <= 30" },
+          "by":     { ".validate": "newData.isString() && newData.val().length <= 40" },
+          "ts":     { ".validate": "newData.isNumber()" }
+        }
+      }
+    },
+
+    "backups": {
+      ".read": true,
+      ".write": true,
+      "$backupId": {
+        ".validate": "(!data.exists() && newData.hasChildren(['people','ts','by'])) || !newData.exists()"
+      }
+    },
+
+    "chat": {
+      ".read": true,
+      ".write": true,
+      "messages": {
+        "$msgId": {
+          ".validate": "!data.exists() && newData.hasChildren(['name','text','ts'])",
+          "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
+          "text": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 1000" },
+          "ts":   { ".validate": "newData.isNumber()" }
+        }
+      }
+    },
+
+    "notifications": {
+      ".read": true,
+      ".write": true,
+      "tokens": {
+        "$token": {
+          ".validate": "newData.hasChildren(['name','ts'])",
+          "name": { ".validate": "newData.isString() && newData.val().length <= 40" },
+          "ts":   { ".validate": "newData.isNumber()" }
+        }
+      }
+    }
+
+  }
+}
