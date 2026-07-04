@@ -1,3 +1,8 @@
+// This runs on Vercel's servers, not in anyone's browser — that's important,
+// because only a trusted server (never a phone) should hold the credentials
+// that let us send pushes to every device.
+import admin from "firebase-admin";
+
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert(
@@ -47,5 +52,4 @@ export default async function handler(req, res) {
     console.error(e);
     return res.status(500).json({ error: e.message });
   }
-                      }
-
+}
