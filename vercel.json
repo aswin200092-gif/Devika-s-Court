@@ -3,6 +3,10 @@
     {
       "path": "/api/notify-court-open",
       "schedule": "30 9 * * 5"
+    },
+    {
+      "path": "/api/auto-close-court",
+      "schedule": "30 11 * * 5"
     }
   ]
 }
